@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
-<title>專屬車隊輪車動態模擬 (退後速度＋70%版)</title>
+<title>專屬車隊輪車動態模擬</title>
 <style>
   body { font-family: "Microsoft JhengHei", sans-serif; background: #1e293b; color: #fff; text-align: center; margin: 0; padding: 20px; }
   canvas { background: #334155; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); margin-top: 10px; max-width: 100%; }
@@ -24,8 +24,8 @@
 </style>
 </head>
 <body>
-  <h2>🚴‍♂️ 專屬車隊輪車動態教學（興累綁定 ＋ 傑萍綁定同退）</h2>
-  <p>前進方向 ➔ （右側虛線框為破風頂風換手點，上方為退下換手道）</p>
+  <h2>🚴‍♂️ 專屬車隊輪車動態教學（興累綁定 ＋ 傑萍綁定）</h2>
+  <p>前進方向 ➔ </p>
 
   <!-- 速度與播放控制面板 -->
   <div class="controls">
@@ -45,7 +45,7 @@
   <div class="legend">
     <span><i class="dot" style="background:#38bdf8;"></i>單人輪轉：廷、豪、光、諴</span>
     <span><i class="dot" style="background:#34d399;"></i>雙人綁定同退：[興➔累]、[傑➔萍]</span>
-    <span><i class="dot" style="background:#f59e0b;"></i>後 2 人（同速移動、長破風週期）：胡、郭</span>
+    <span><i class="dot" style="background:#f59e0b;"></i>壓尾雙人輪車：胡、郭</span>
   </div>
 
 <script>
@@ -70,21 +70,26 @@ const totalMainSpots = 8;
 const totalRearSpots = 2;
 const spacing = 56;
 const mainHeadX = 716;
-const rearHeadX = 264;
-const mainY = 175;
-const dropY = 85;
-const baseSpeed = 0.0075;
-const dropBoost = 1.7; // 【調整】退下道退後的速度比前進速度高出 70%
+const laneLineY = 66;
+const mainY = 115;
+const dropY = 185;
+const baseSpeed = 0.00525;
+const dropBoost = 1.7;
 
 let mainUnits = [];
 let rearUnits = [];
 let mainDropCount = 0;
+let rearGroupOffsetSpot = 8;
 let roadOffset = 0;
 let speedMultiplier = 1.0;
 let isPaused = false;
+let isYielding = false;
 
 function initSimulation() {
   mainDropCount = 0;
+  isYielding = false;
+  rearGroupOffsetSpot = 8;
+
   mainUnits = mainConfig.map(cfg => ({ ...cfg, members: [...cfg.members], size: cfg.members.length }));
   rearUnits = rearConfig.map(cfg => ({ ...cfg, members: [...cfg.members], size: cfg.members.length }));
 
@@ -178,10 +183,10 @@ function drawReservedSpot() {
   ctx.arc(reservedX, mainY, 18, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.fillStyle = 'rgba(148, 163, 184, 0.8)';
+  ctx.fillStyle = 'rgba(148, 163, 184, 0.85)';
   ctx.font = '12px "Microsoft JhengHei", sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('破風換手點', reservedX, mainY + 32);
+  ctx.fillText('破風換手點', reservedX, mainY - 25);
   ctx.restore();
 }
 
@@ -201,64 +206,93 @@ function getMaxEndSpot(units, excludeUnit) {
   return maxEndSpot;
 }
 
-function updateGroup(units, totalSpots, headX, speed, isMainGroup, canRotate) {
-  if (!isPaused) {
-    // 1. 檢查領騎單位是否已推進到最前方換手點 (spot <= -1) 且破風時間已滿
-    if (canRotate) {
-      let leader = units.find(u => u.state === 'main' && u.spot <= -1);
-      if (leader) {
-        let holdLimit = isMainGroup ? 0 : 2.5;
-        if (leader.holdTimer >= holdLimit) {
-          leader.state = 'drop';
-          leader.dropProgress = 0;
-          leader.holdTimer = 0;
-          if (isMainGroup) {
-            mainDropCount++;
-          }
-        } else {
-          leader.holdTimer += speed;
+// 取得組內目前在主線上「最前方」車手的相對 spot（避免後組領騎超車撞上前面集團）
+function getMinFrontSpot(units) {
+  let minSpot = Infinity;
+  units.forEach(u => {
+    if (u.state === 'main') {
+      minSpot = Math.min(minSpot, u.spot);
+    }
+  });
+  return minSpot === Infinity ? 0 : minSpot;
+}
+
+function getDroppingMemberPos(u, idx, currentTail, groupHeadX, totalSpots) {
+  let t = u.dropProgress;
+  let startX = groupHeadX - (-1 + idx) * spacing;
+  let fixedDropTargetSpot = Math.max(0, totalSpots - u.size + idx - 1);
+  let fixedDropEndX = groupHeadX - fixedDropTargetSpot * spacing;
+  let exactMainTailX = groupHeadX - (currentTail + idx) * spacing;
+
+  let x, y;
+  if (t < 0.15) {
+    let st = t / 0.15;
+    x = startX - st * 15;
+    y = mainY + st * (dropY - mainY);
+  } else if (t < 0.85) {
+    let st = (t - 0.15) / 0.70;
+    x = (startX - 15) - st * ((startX - 15) - fixedDropEndX);
+    y = dropY;
+  } else {
+    let st = (t - 0.85) / 0.15;
+    x = fixedDropEndX + st * (exactMainTailX - fixedDropEndX);
+    y = dropY - st * (dropY - mainY);
+  }
+  return { x, y };
+}
+
+function updateGroupState(units, speed, isMainGroup, canRotate) {
+  if (canRotate) {
+    let leader = units.find(u => u.state === 'main' && u.spot <= -1);
+    if (leader) {
+      let holdLimit = isMainGroup ? 0 : 2.5;
+      if (leader.holdTimer >= holdLimit) {
+        leader.state = 'drop';
+        leader.dropProgress = 0;
+        leader.holdTimer = 0;
+        if (isMainGroup) {
+          mainDropCount++;
         }
+      } else {
+        leader.holdTimer += speed;
       }
     }
-
-    // 2. 更新所有單位狀態
-    units.forEach(u => {
-      if (u.state === 'main') {
-        let minSpot = 0;
-        let hasFrontRider = false;
-        units.forEach(other => {
-          if (other !== u && other.state === 'main' && other.spot < u.spot) {
-            hasFrontRider = true;
-            minSpot = Math.max(minSpot, other.spot + other.size);
-          }
-        });
-
-        if (hasFrontRider) {
-          // 後方跟騎補位前進速度（維持基準）
-          if (u.spot > minSpot) {
-            u.spot = Math.max(minSpot, u.spot - speed * 2.5);
-          }
-        } else {
-          // 領騎往前頂風推進速度（維持基準）
-          if (canRotate && u.spot > -1) {
-            u.spot = Math.max(-1, u.spot - speed * 0.85);
-          }
-        }
-      } else if (u.state === 'drop') {
-        // 退下道滑行速度比前進速度高出 70% (乘上 dropBoost = 1.7)
-        let dropStep = (isMainGroup ? (speed * 0.45) : (speed * 1.15)) * dropBoost;
-        u.dropProgress += dropStep;
-
-        if (u.dropProgress >= 1) {
-          u.spot = getMaxEndSpot(units, u);
-          u.state = 'main';
-          u.dropProgress = 0;
-        }
-      }
-    });
   }
 
-  // 3. 繪製單位內的車手
+  units.forEach(u => {
+    if (u.state === 'main') {
+      let minSpot = 0;
+      let hasFrontRider = false;
+      units.forEach(other => {
+        if (other !== u && other.state === 'main' && other.spot < u.spot) {
+          hasFrontRider = true;
+          minSpot = Math.max(minSpot, other.spot + other.size);
+        }
+      });
+
+      if (hasFrontRider) {
+        if (u.spot > minSpot) {
+          u.spot = Math.max(minSpot, u.spot - speed * 2.5);
+        }
+      } else {
+        if (canRotate && u.spot > -1) {
+          u.spot = Math.max(-1, u.spot - speed * 0.85);
+        }
+      }
+    } else if (u.state === 'drop') {
+      let dropStep = (isMainGroup ? (speed * 0.45) : (speed * 1.15)) * dropBoost;
+      u.dropProgress += dropStep;
+
+      if (u.dropProgress >= 1) {
+        u.spot = getMaxEndSpot(units, u);
+        u.state = 'main';
+        u.dropProgress = 0;
+      }
+    }
+  });
+}
+
+function drawGroup(units, totalSpots, groupHeadX) {
   units.forEach(u => {
     let coords = [];
     let currentTail = getMaxEndSpot(units, u);
@@ -267,28 +301,12 @@ function updateGroup(units, totalSpots, headX, speed, isMainGroup, canRotate) {
       let x, y;
       if (u.state === 'main') {
         let actualSpot = u.spot + idx;
-        x = headX - actualSpot * spacing;
+        x = groupHeadX - actualSpot * spacing;
         y = mainY;
       } else {
-        let t = u.dropProgress;
-        let startX = headX - (-1 + idx) * spacing;
-        let fixedDropTargetSpot = Math.max(0, totalSpots - u.size + idx - 1);
-        let fixedDropEndX = headX - fixedDropTargetSpot * spacing;
-        let exactMainTailX = headX - (currentTail + idx) * spacing;
-
-        if (t < 0.15) {
-          let st = t / 0.15;
-          x = startX - st * 15;
-          y = mainY - st * (mainY - dropY);
-        } else if (t < 0.85) {
-          let st = (t - 0.15) / 0.70;
-          x = (startX - 15) - st * ((startX - 15) - fixedDropEndX);
-          y = dropY;
-        } else {
-          let st = (t - 0.85) / 0.15;
-          x = fixedDropEndX + st * (exactMainTailX - fixedDropEndX);
-          y = dropY + st * (mainY - dropY);
-        }
+        let pos = getDroppingMemberPos(u, idx, currentTail, groupHeadX, totalSpots);
+        x = pos.x;
+        y = pos.y;
       }
       coords.push({ x, y, name });
     });
@@ -301,36 +319,85 @@ function updateGroup(units, totalSpots, headX, speed, isMainGroup, canRotate) {
   });
 }
 
+function updateSimulation(speed) {
+  if (!isPaused) {
+    // 1. 更新前8人主力集團輪車狀態
+    updateGroupState(mainUnits, speed, true, true);
+
+    // 2. 更新後2人（胡、郭）雙人輪車狀態
+    updateGroupState(rearUnits, speed, false, mainDropCount >= 2);
+
+    // 3. 計算安全跟車防撞牆：前面有其他人就不往前越界，退下者靠近時往後讓位
+    let mainTail = getMaxEndSpot(mainUnits, null);
+    let frontRiderX = mainHeadX - (mainTail - 1) * spacing;
+    let droppingUnit = mainUnits.find(u => u.state === 'drop');
+    let reservedSpace = 0;
+
+    if (droppingUnit) {
+      let droppingHeadX = getDroppingMemberPos(droppingUnit, 0, mainTail, mainHeadX, totalMainSpots).x;
+      if (droppingHeadX <= frontRiderX + spacing * 1.5) {
+        reservedSpace = droppingUnit.size;
+        isYielding = true;
+      } else {
+        isYielding = false;
+      }
+    } else {
+      isYielding = false;
+    }
+
+    // 【關鍵修正】扣除後組最前方車手的相對位置 (minRearFrontSpot)，確保無論胡/郭誰在前面頂風，
+    // 兩人中最前面那位永遠停在 (mainTail + reservedSpace + 安全間距) 後方，絕不會往前撞到前車！
+    let minRearFrontSpot = getMinFrontSpot(rearUnits);
+    let safeGap = 0.08;
+    let targetRearOffsetSpot = mainTail + reservedSpace + safeGap - minRearFrontSpot;
+
+    if (rearGroupOffsetSpot < targetRearOffsetSpot) {
+      // 前方有車阻擋或退下者靠近讓位：平穩往後退保持安全距離
+      rearGroupOffsetSpot = Math.min(targetRearOffsetSpot, rearGroupOffsetSpot + speed * 4.5);
+    } else if (rearGroupOffsetSpot > targetRearOffsetSpot) {
+      // 前方空出位置時：緊跟補上，但抵達目標距離即停止前進
+      rearGroupOffsetSpot = Math.max(targetRearOffsetSpot, rearGroupOffsetSpot - speed * 2.5);
+    }
+  }
+
+  // 4. 繪製主集團與胡、郭雙人輪車組
+  drawGroup(mainUnits, totalMainSpots, mainHeadX);
+  let dynamicRearHeadX = mainHeadX - rearGroupOffsetSpot * spacing;
+  drawGroup(rearUnits, totalRearSpots, dynamicRearHeadX);
+}
+
 function loop() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // 繪製地面速度線（維持基準速度）
+  // 繪製上方車道速度虛線
   if (!isPaused) {
-    roadOffset = (roadOffset - 2 * speedMultiplier) % 40;
+    roadOffset = (roadOffset - 1.4 * speedMultiplier) % 40;
   }
-  ctx.strokeStyle = '#475569';
+  ctx.strokeStyle = '#64748b';
   ctx.lineWidth = 2;
   ctx.setLineDash([20, 20]);
   ctx.beginPath();
-  ctx.moveTo(roadOffset, 235);
-  ctx.lineTo(canvas.width, 235);
+  ctx.moveTo(roadOffset, laneLineY);
+  ctx.lineTo(canvas.width, laneLineY);
   ctx.stroke();
   ctx.setLineDash([]);
 
   // 繪製前方預留的破風換手點
   drawReservedSpot();
 
-  // 更新前8人 與 後2人
+  // 更新並繪製整體輪車與防撞讓位動作
   const currentSpeed = baseSpeed * speedMultiplier;
-  updateGroup(mainUnits, totalMainSpots, mainHeadX, currentSpeed, true, true);
-  updateGroup(rearUnits, totalRearSpots, rearHeadX, currentSpeed, false, mainDropCount >= 2);
+  updateSimulation(currentSpeed);
 
-  // 左上角顯示目前狀態提示
-  ctx.fillStyle = '#94a3b8';
+  // 左上角顯示即時動態狀態提示
+  ctx.fillStyle = isYielding ? '#fbbf24' : '#94a3b8';
   ctx.font = '13px "Microsoft JhengHei", sans-serif';
   ctx.textAlign = 'left';
-  const rearStatus = mainDropCount >= 2 ? '後2人狀態：已啟動輪車（同速移動、長破風週期）' : `後2人狀態：跟騎等待中（主集團已輪 ${mainDropCount} / 2 次）`;
-  ctx.fillText(rearStatus, 20, 28);
+  let rearStatus = mainDropCount >= 2 ? '雙人輪車進行中（保持安全跟車距）' : `跟騎等待中（主集團已輪 ${mainDropCount} / 2 次）`;
+  if (isYielding) {
+    rearStatus += ' ➔ 退下者靠近，往後退讓出空間插入！';
+  }
+  ctx.fillText(`胡、郭狀態：${rearStatus}`, 20, 28);
 
   requestAnimationFrame(loop);
 }
