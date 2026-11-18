@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
-<title>專屬車隊輪車動態模擬</title>
+<title>專屬車隊輪車動態模擬 (三線位置下移15%版)</title>
 <style>
   body { font-family: "Microsoft JhengHei", sans-serif; background: #1e293b; color: #fff; text-align: center; margin: 0; padding: 20px; }
   canvas { background: #334155; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); margin-top: 10px; max-width: 100%; }
@@ -24,8 +24,8 @@
 </style>
 </head>
 <body>
-  <h2>🚴‍♂️ 專屬車隊輪車動態教學（興累綁定 ＋ 傑萍綁定）</h2>
-  <p>前進方向 ➔ </p>
+  <h2>🚴‍♂️ 專屬車隊輪車動態教學（興累綁定 ＋ 傑萍綁定 ＋ 胡郭防撞輪車讓位）</h2>
+  <p>前進方向 ➔ （胡、郭保持安全距離不越過前車車尾；前方退下者靠近時自動往後讓位）</p>
 
   <!-- 速度與播放控制面板 -->
   <div class="controls">
@@ -45,7 +45,7 @@
   <div class="legend">
     <span><i class="dot" style="background:#38bdf8;"></i>單人輪轉：廷、豪、光、諴</span>
     <span><i class="dot" style="background:#34d399;"></i>雙人綁定同退：[興➔累]、[傑➔萍]</span>
-    <span><i class="dot" style="background:#f59e0b;"></i>壓尾雙人輪車：胡、郭</span>
+    <span><i class="dot" style="background:#f59e0b;"></i>壓尾雙人輪車（不越過前車車尾＋開門讓位）：胡、郭</span>
   </div>
 
 <script>
@@ -70,9 +70,10 @@ const totalMainSpots = 8;
 const totalRearSpots = 2;
 const spacing = 56;
 const mainHeadX = 716;
-const laneLineY = 66;
-const mainY = 115;
-const dropY = 185;
+// 【調整】三條線的水平高度位置同步往下移 15% (約 +40px)
+const laneLineY = 106; // 原 66 -> 106
+const mainY = 155;     // 原 115 -> 155
+const dropY = 225;     // 原 185 -> 225
 const baseSpeed = 0.00525;
 const dropBoost = 1.7;
 
@@ -206,7 +207,6 @@ function getMaxEndSpot(units, excludeUnit) {
   return maxEndSpot;
 }
 
-// 取得組內目前在主線上「最前方」車手的相對 spot（避免後組領騎超車撞上前面集團）
 function getMinFrontSpot(units) {
   let minSpot = Infinity;
   units.forEach(u => {
@@ -321,13 +321,9 @@ function drawGroup(units, totalSpots, groupHeadX) {
 
 function updateSimulation(speed) {
   if (!isPaused) {
-    // 1. 更新前8人主力集團輪車狀態
     updateGroupState(mainUnits, speed, true, true);
-
-    // 2. 更新後2人（胡、郭）雙人輪車狀態
     updateGroupState(rearUnits, speed, false, mainDropCount >= 2);
 
-    // 3. 計算安全跟車防撞牆：前面有其他人就不往前越界，退下者靠近時往後讓位
     let mainTail = getMaxEndSpot(mainUnits, null);
     let frontRiderX = mainHeadX - (mainTail - 1) * spacing;
     let droppingUnit = mainUnits.find(u => u.state === 'drop');
@@ -345,22 +341,17 @@ function updateSimulation(speed) {
       isYielding = false;
     }
 
-    // 【關鍵修正】扣除後組最前方車手的相對位置 (minRearFrontSpot)，確保無論胡/郭誰在前面頂風，
-    // 兩人中最前面那位永遠停在 (mainTail + reservedSpace + 安全間距) 後方，絕不會往前撞到前車！
     let minRearFrontSpot = getMinFrontSpot(rearUnits);
     let safeGap = 0.08;
     let targetRearOffsetSpot = mainTail + reservedSpace + safeGap - minRearFrontSpot;
 
     if (rearGroupOffsetSpot < targetRearOffsetSpot) {
-      // 前方有車阻擋或退下者靠近讓位：平穩往後退保持安全距離
       rearGroupOffsetSpot = Math.min(targetRearOffsetSpot, rearGroupOffsetSpot + speed * 4.5);
     } else if (rearGroupOffsetSpot > targetRearOffsetSpot) {
-      // 前方空出位置時：緊跟補上，但抵達目標距離即停止前進
       rearGroupOffsetSpot = Math.max(targetRearOffsetSpot, rearGroupOffsetSpot - speed * 2.5);
     }
   }
 
-  // 4. 繪製主集團與胡、郭雙人輪車組
   drawGroup(mainUnits, totalMainSpots, mainHeadX);
   let dynamicRearHeadX = mainHeadX - rearGroupOffsetSpot * spacing;
   drawGroup(rearUnits, totalRearSpots, dynamicRearHeadX);
